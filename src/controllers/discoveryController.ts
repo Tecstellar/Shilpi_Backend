@@ -20,8 +20,9 @@ export class DiscoveryController {
    * Query params:
    * - pincode: string (e.g., "641002")
    * - city: string (optional)
-   * - category: string (optional: "all", "bridal", "mehendi", "hair")
+   * - category: string (optional: "all", "pro", "bridal", "mehendi", "hair")
    * - topFive: boolean (optional)
+   * - proOnly: boolean (optional)
    */
   static async getNearestBeauticians(req: Request, res: Response): Promise<void> {
     try {
@@ -29,14 +30,16 @@ export class DiscoveryController {
       const searchCity = typeof req.query.city === 'string' ? req.query.city.trim().toLowerCase() : '';
       const category = typeof req.query.category === 'string' ? req.query.category.trim().toLowerCase() : 'all';
       const topFive = req.query.topFive === 'true';
+      const proOnly = req.query.proOnly === 'true' || category === 'pro';
 
-      // Fetch active beauticians with their real services, bookings, and gallery
+      // Fetch active beauticians with their subscription, bookings, and services
       const beauticians: any[] = await (prisma as any).beautician.findMany({
         where: {
           status: 'active',
           ...(searchCity ? { city: { contains: searchCity, mode: 'insensitive' } } : {}),
         },
         include: {
+          subscription: true,
           bookings: {
             select: { id: true, status: true },
           },
@@ -52,13 +55,22 @@ export class DiscoveryController {
         },
       });
 
-      // Map and enrich each real beautician with strictly real database information
+      // Map each beautician with strictly real database information
       let enriched = beauticians.map((b: any, index: number) => {
         const bookingsList = Array.isArray(b.bookings) ? b.bookings : [];
-        // Strictly true count from database
+        // Strictly true count of completed / confirmed bookings in DB
         const completedBookings = bookingsList.filter(
           (bk: any) => bk.status === 'completed' || bk.status === 'confirmed' || bk.status === 'Closed'
         ).length;
+
+        // Pro subscription status directly from subscriptions table
+        const isPro = Boolean(
+          b.subscription?.status === 'active' &&
+          (b.subscription?.tier === 'pro_monthly' ||
+           b.subscription?.tier === 'pro_annual' ||
+           b.subscription?.tier === 'enterprise' ||
+           b.subscription?.tier === 'premium')
+        );
 
         const businessTypes = Array.isArray(b.businessTypes) && b.businessTypes.length > 0
           ? (b.businessTypes as string[])
@@ -108,10 +120,10 @@ export class DiscoveryController {
           pincode: b.pincode || '',
           profilePhotoUrl: b.profilePhotoUrl || null,
           businessTypes,
+          isPro,
+          subscriptionTier: b.subscription?.tier || 'free',
           verified: true,
           completedBookingsCount: completedBookings, // Strictly real count
-          rating: 4.8 + ((index % 2) * 0.1),
-          reviewsCount: bookingsList.length > 0 ? bookingsList.length : 12 + (index * 4),
           distanceKm: parseFloat(simulatedDistanceKm.toFixed(1)),
           isExactPincode,
           startingPrice,
@@ -124,21 +136,37 @@ export class DiscoveryController {
 
       // Filter by Category if provided
       if (category !== 'all') {
-        enriched = enriched.filter((b) =>
-          b.businessTypes.some((t: string) => t.toLowerCase().includes(category)) ||
-          b.services.some((s: string) => s.toLowerCase().includes(category))
-        );
+        if (category === 'pro') {
+          enriched = enriched.filter((b) => b.isPro);
+        } else {
+          enriched = enriched.filter((b) =>
+            b.businessTypes.some((t: string) => t.toLowerCase().includes(category)) ||
+            b.services.some((s: string) => s.toLowerCase().includes(category))
+          );
+        }
       }
 
-      // If user provided a pincode, prioritize exact matching pincode, then distance
-      if (searchPincode) {
-        enriched.sort((a, b) => {
-          if (a.isExactPincode !== b.isExactPincode) {
-            return a.isExactPincode ? -1 : 1;
-          }
-          return a.distanceKm - b.distanceKm;
-        });
+      if (proOnly) {
+        enriched = enriched.filter((b) => b.isPro);
       }
+
+      // Sorter Algorithm:
+      // 1. Pro / Premium Subscribers first (highest priority)
+      // 2. Orders completed volume descending
+      // 3. Exact Pincode match next
+      // 4. Distance proximity
+      enriched.sort((a, b) => {
+        if (a.isPro !== b.isPro) {
+          return a.isPro ? -1 : 1;
+        }
+        if (b.completedBookingsCount !== a.completedBookingsCount) {
+          return b.completedBookingsCount - a.completedBookingsCount;
+        }
+        if (a.isExactPincode !== b.isExactPincode) {
+          return a.isExactPincode ? -1 : 1;
+        }
+        return a.distanceKm - b.distanceKm;
+      });
 
       // Limit to Top 5 if requested
       if (topFive) {
