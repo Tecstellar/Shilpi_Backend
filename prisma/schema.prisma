@@ -1,0 +1,399 @@
+// SHILPI DATABASE SCHEMA - PRISMA ORM
+// Configured for Amazon RDS PostgreSQL
+// All financial amounts stored as BIGINT in paise (1 INR = 100 paise)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BeauticianStatus {
+  active
+  suspended
+  pending_verification
+}
+
+enum ThemeType {
+  signature
+  mehendi
+  kumkum
+  indigo
+}
+
+enum Role {
+  owner
+  staff
+  admin
+}
+
+enum BookingStatus {
+  enquiry
+  confirmed
+  in_progress
+  completed
+  cancelled
+}
+
+enum ServiceType {
+  bridal
+  hair
+  makeup
+  skincare
+  mehendi
+  combo
+}
+
+enum ExpenseCategory {
+  cosmetics
+  hair_products
+  saree_materials
+  rent
+  utilities
+  travel
+  salary
+  marketing
+  other
+}
+
+enum PaymentMode {
+  cash
+  upi
+  card
+  bank_transfer
+}
+
+enum PaymentStatus {
+  initiated
+  successful
+  failed
+  refunded
+}
+
+enum SubscriptionTier {
+  free
+  pro_monthly
+  pro_annual
+  enterprise
+}
+
+enum SubscriptionStatus {
+  active
+  past_due
+  cancelled
+  trialing
+}
+
+enum NotificationType {
+  booking_reminder
+  due_payment
+  subscription_alert
+  system_notice
+}
+
+// 1. Beauticians (Tenants)
+model Beautician {
+  id              String            @id @default(uuid()) @db.Uuid
+  phone           String            @unique @db.VarChar(15)
+  businessName    String            @map("business_name") @db.VarChar(150)
+  ownerName       String            @map("owner_name") @db.VarChar(100)
+  businessTypes   String[]          @default([]) @map("business_types")
+  profilePhotoUrl String?           @map("profile_photo_url") @db.Text
+  address         String?           @db.Text
+  city            String?           @db.VarChar(50)
+  state           String?           @db.VarChar(50)
+  pincode         String?           @db.VarChar(10)
+  status          BeauticianStatus  @default(active)
+  activeTheme     ThemeType         @default(signature) @map("active_theme")
+  themeMode       String            @default("dark") @map("theme_mode") @db.VarChar(10)
+  instagramHandle String?           @map("instagram_handle") @db.VarChar(50)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  users           User[]
+  clients         Client[]
+  servicePackages ServicePackage[]
+  bookings        Booking[]
+  expenses        Expense[]
+  subscription    Subscription?
+  galleryPhotos   GalleryPhoto[]
+  reminders       Reminder[]
+  auditLogs       AuditLog[]
+  deviceTokens    DeviceToken[]
+
+  @@index([phone])
+  @@index([status])
+  @@map("beauticians")
+}
+
+// 2. Users (Authentication & RBAC)
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  beauticianId String    @map("beautician_id") @db.Uuid
+  phone        String    @unique @db.VarChar(15)
+  role         Role      @default(owner)
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  beautician   Beautician @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+  auditLogs    AuditLog[]
+
+  @@index([beauticianId])
+  @@map("users")
+}
+
+// 3. OTP Verifications
+model OtpVerification {
+  id         String   @id @default(uuid()) @db.Uuid
+  phone      String   @db.VarChar(15)
+  otpHash    String   @map("otp_hash") @db.VarChar(255)
+  attempts   Int      @default(0) @db.SmallInt
+  expiresAt  DateTime @map("expires_at")
+  isVerified Boolean  @default(false) @map("is_verified")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([phone, createdAt])
+  @@map("otp_verifications")
+}
+
+// 4. Clients (CRM Directory)
+model Client {
+  id           String    @id @default(uuid()) @db.Uuid
+  beauticianId String    @map("beautician_id") @db.Uuid
+  name         String    @db.VarChar(100)
+  phone        String    @db.VarChar(15)
+  email        String?   @db.VarChar(100)
+  address      String?   @db.Text
+  notes           String?   @db.Text
+  profilePhotoUrl String?   @map("profile_photo_url") @db.Text
+  isVip           Boolean   @default(false) @map("is_vip")
+  isActive        Boolean   @default(true) @map("is_active")
+  weddingDate     DateTime? @map("wedding_date") @db.Date
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  beautician   Beautician @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+  bookings     Booking[]
+
+  @@unique([beauticianId, phone])
+  @@index([beauticianId])
+  @@index([beauticianId, name])
+  @@map("clients")
+}
+
+// 5. Service Packages
+model ServicePackage {
+  id             String      @id @default(uuid()) @db.Uuid
+  beauticianId   String      @map("beautician_id") @db.Uuid
+  name           String      @db.VarChar(120)
+  serviceType    ServiceType @map("service_type")
+  description    String?     @db.Text
+  durationMinutes Int        @default(60) @map("duration_minutes")
+  pricePaise     BigInt      @map("price_paise") // Integer in paise
+  isActive       Boolean     @default(true) @map("is_active")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  beautician     Beautician  @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+  bookingItems   BookingItem[]
+
+  @@index([beauticianId])
+  @@map("service_packages")
+}
+
+// 6. Bookings
+model Booking {
+  id             String        @id @default(uuid()) @db.Uuid
+  beauticianId   String        @map("beautician_id") @db.Uuid
+  clientId       String        @map("client_id") @db.Uuid
+  status         BookingStatus @default(enquiry)
+  bookingDate    DateTime      @map("booking_date") @db.Date
+  startTime      DateTime?     @map("start_time")
+  endTime        DateTime?     @map("end_time")
+  eventLocation  String?       @map("event_location") @db.Text
+  totalAmountPaise BigInt      @default(0) @map("total_amount_paise")
+  advancePaidPaise BigInt      @default(0) @map("advance_paid_paise")
+  balanceDuePaise  BigInt      @default(0) @map("balance_due_paise")
+  notes          String?       @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  beautician     Beautician    @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+  client         Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  items          BookingItem[]
+  payments       Payment[]
+  galleryPhotos  GalleryPhoto[]
+  reminders      Reminder[]
+
+  @@index([beauticianId, bookingDate])
+  @@index([beauticianId, status])
+  @@index([clientId])
+  @@map("bookings")
+}
+
+// 7. Booking Items
+model BookingItem {
+  id               String          @id @default(uuid()) @db.Uuid
+  bookingId        String          @map("booking_id") @db.Uuid
+  servicePackageId String?         @map("service_package_id") @db.Uuid
+  customTitle      String          @map("custom_title") @db.VarChar(120)
+  quantity         Int             @default(1) @db.SmallInt
+  unitPricePaise   BigInt          @map("unit_price_paise")
+  totalPricePaise  BigInt          @map("total_price_paise")
+
+  booking          Booking         @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  servicePackage   ServicePackage? @relation(fields: [servicePackageId], references: [id], onDelete: SetNull)
+
+  @@index([bookingId])
+  @@map("booking_items")
+}
+
+// 8. Payments
+model Payment {
+  id              String        @id @default(uuid()) @db.Uuid
+  bookingId       String        @map("booking_id") @db.Uuid
+  amountPaise     BigInt        @map("amount_paise")
+  paymentMode     PaymentMode   @map("payment_mode")
+  status          PaymentStatus @default(successful)
+  transactionRef  String?       @map("transaction_ref") @db.VarChar(100)
+  razorpayPaymentId String?     @map("razorpay_payment_id") @db.VarChar(100)
+  notes           String?       @db.Text
+  receivedAt      DateTime      @default(now()) @map("received_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@map("payments")
+}
+
+// 9. Expenses
+model Expense {
+  id           String          @id @default(uuid()) @db.Uuid
+  beauticianId String          @map("beautician_id") @db.Uuid
+  category     ExpenseCategory
+  title        String          @db.VarChar(150)
+  amountPaise  BigInt          @map("amount_paise")
+  expenseDate  DateTime        @map("expense_date") @db.Date
+  receiptUrl   String?         @map("receipt_url") @db.Text
+  notes        String?         @db.Text
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  beautician   Beautician      @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+
+  @@index([beauticianId, expenseDate])
+  @@map("expenses")
+}
+
+// 10. Subscriptions
+model Subscription {
+  id               String             @id @default(uuid()) @db.Uuid
+  beauticianId     String             @unique @map("beautician_id") @db.Uuid
+  tier             SubscriptionTier   @default(free)
+  status           SubscriptionStatus @default(active)
+  currentPeriodStart DateTime         @map("current_period_start")
+  currentPeriodEnd   DateTime         @map("current_period_end")
+  razorpaySubscriptionId String?     @map("razorpay_subscription_id") @db.VarChar(100)
+  clientLimit      Int                @default(15) @map("client_limit")
+  galleryLimit     Int                @default(20) @map("gallery_limit")
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+
+  beautician       Beautician         @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+// 11. Gallery Photos (3-to-5 Photo Portfolio Looks + Instagram Share Tracking)
+model GalleryPhoto {
+  id                String       @id @default(uuid()) @db.Uuid
+  beauticianId      String       @map("beautician_id") @db.Uuid
+  bookingId         String?      @map("booking_id") @db.Uuid
+  title             String       @default("Finished Look") @db.VarChar(150)
+  place             String?      @db.VarChar(120)
+  imageUrl          String       @default("") @map("image_url") @db.Text
+  thumbnailUrl      String?      @map("thumbnail_url") @db.Text
+  extraImages       String[]     @default([]) @map("extra_images")
+  serviceTag        ServiceType? @map("service_tag")
+  caption           String?      @db.Text
+  instagramHandle   String?      @map("instagram_handle") @db.VarChar(100)
+  instagramUrl      String?      @map("instagram_url") @db.Text
+  postedToInstagram Boolean      @default(false) @map("posted_to_instagram")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  beautician        Beautician   @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+  booking           Booking?     @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@index([beauticianId])
+  @@map("gallery_photos")
+}
+
+// 12. Reminders
+model Reminder {
+  id           String    @id @default(uuid()) @db.Uuid
+  beauticianId String    @map("beautician_id") @db.Uuid
+  bookingId    String?   @map("booking_id") @db.Uuid
+  title        String    @db.VarChar(150)
+  remindAt     DateTime  @map("remind_at")
+  isCompleted  Boolean   @default(false) @map("is_completed")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  beautician   Beautician @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+  booking      Booking?   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([beauticianId, remindAt])
+  @@map("reminders")
+}
+
+// 13. Notifications
+model Notification {
+  id           String           @id @default(uuid()) @db.Uuid
+  beauticianId String           @map("beautician_id") @db.Uuid
+  type         NotificationType
+  title        String           @db.VarChar(120)
+  message      String           @db.Text
+  isRead       Boolean          @default(false) @map("is_read")
+  actionUrl    String?          @map("action_url") @db.Text
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  @@index([beauticianId, isRead])
+  @@map("notifications")
+}
+
+// 14. Device Tokens
+model DeviceToken {
+  id           String     @id @default(uuid()) @db.Uuid
+  beauticianId String     @map("beautician_id") @db.Uuid
+  fcmToken     String     @unique @map("fcm_token") @db.VarChar(255)
+  deviceOs     String     @map("device_os") @db.VarChar(20)
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  beautician   Beautician @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+
+  @@index([beauticianId])
+  @@map("device_tokens")
+}
+
+// 15. Audit Logs
+model AuditLog {
+  id           String      @id @default(uuid()) @db.Uuid
+  beauticianId String      @map("beautician_id") @db.Uuid
+  userId       String?     @map("user_id") @db.Uuid
+  action       String      @db.VarChar(80)
+  targetTable  String      @map("target_table") @db.VarChar(50)
+  targetId     String?     @map("target_id") @db.Uuid
+  ipAddress    String?     @map("ip_address") @db.VarChar(45)
+  timestamp    DateTime    @default(now())
+
+  beautician   Beautician  @relation(fields: [beauticianId], references: [id], onDelete: Cascade)
+  user         User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([beauticianId, timestamp])
+  @@map("audit_logs")
+}
