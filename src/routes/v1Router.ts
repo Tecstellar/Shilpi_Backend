@@ -9,12 +9,16 @@ import { GalleryController } from '../controllers/galleryController.js';
 import { HealthController } from '../controllers/healthController.js';
 import { PackageController } from '../controllers/packageController.js';
 import { ReminderController } from '../controllers/reminderController.js';
+import { DiscoveryController } from '../controllers/discoveryController.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 
 export const v1Router = Router();
 
 // 1. Healthcheck (Checklist #8)
 v1Router.get('/healthz', HealthController.check);
+
+// 1.1 Public Customer Discovery: Find Nearest Beautician
+v1Router.get('/discovery/beauticians', DiscoveryController.getNearestBeauticians);
 
 // 2. Authentication & Verification
 v1Router.post('/auth/otp/send', AuthController.sendOtp);
