@@ -10,60 +10,123 @@ const CITY_COORDS: Record<string, { lat: number; lng: number }> = {
   'tirunelveli': { lat: 8.7139, lng: 77.7567 },
   'madurai': { lat: 9.9252, lng: 78.1198 },
   'chennai': { lat: 13.0827, lng: 80.2707 },
+  'salem': { lat: 11.6643, lng: 78.1460 },
+  'trichy': { lat: 10.7905, lng: 78.7047 },
+  'tiruchirappalli': { lat: 10.7905, lng: 78.7047 },
+  'erode': { lat: 11.3410, lng: 77.7172 },
+  'tiruppur': { lat: 11.1085, lng: 77.3411 },
   'bengaluru': { lat: 12.9716, lng: 77.5946 },
   'bangalore': { lat: 12.9716, lng: 77.5946 },
 };
 
+function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth radius in KM
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return parseFloat((R * c).toFixed(1));
+}
+
 export class DiscoveryController {
   /**
-   * Public discovery endpoint for customers to find nearby registered beauticians.
-   * Query params:
-   * - pincode: string (e.g., "641002")
-   * - city: string (optional)
-   * - category: string (optional: "all", "pro", "bridal", "mehendi", "hair")
-   * - topFive: boolean (optional)
-   * - proOnly: boolean (optional)
+   * Public discovery endpoint for customers to find beauticians with
+   * advanced filtering, 50km radius nearby search, dynamic top rankings,
+   * profession categories, and pagination.
    */
   static async getNearestBeauticians(req: Request, res: Response): Promise<void> {
     try {
       const searchPincode = typeof req.query.pincode === 'string' ? req.query.pincode.trim() : '';
       const searchCity = typeof req.query.city === 'string' ? req.query.city.trim().toLowerCase() : '';
-      const category = typeof req.query.category === 'string' ? req.query.category.trim().toLowerCase() : 'all';
-      const topFive = req.query.topFive === 'true';
-      const proOnly = req.query.proOnly === 'true' || category === 'pro';
+      const section = typeof req.query.section === 'string' ? req.query.section.trim().toLowerCase() : 'nearby';
+      const category = typeof req.query.category === 'string' ? req.query.category.trim() : 'All';
+      const profession = typeof req.query.profession === 'string' ? req.query.profession.trim() : '';
+      const rankingCriteria = typeof req.query.rankingCriteria === 'string' ? req.query.rankingCriteria.trim().toLowerCase() : 'combined';
+      const subscription = typeof req.query.subscription === 'string' ? req.query.subscription.trim().toLowerCase() : 'all';
+      const sortBy = typeof req.query.sortBy === 'string' ? req.query.sortBy.trim().toLowerCase() : '';
+      const search = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
 
-      // Fetch active beauticians with their subscription, bookings, and services
+      // Distance radius filter (e.g. 5, 10, 25, 50, or default 50 for nearby section)
+      let radiusKm = req.query.radiusKm ? parseFloat(req.query.radiusKm as string) : undefined;
+      if (section === 'nearby' && radiusKm === undefined) {
+        radiusKm = 50; // Requirement: 50 KM radius default for Nearby section
+      }
+
+      // Ranking limit (e.g. top_5, top_10, top_20, top_50, top_100, all)
+      const limitParam = typeof req.query.limit === 'string' ? req.query.limit.toLowerCase().replace('top_', '') : undefined;
+      const rankingLimit = limitParam && limitParam !== 'all' ? parseInt(limitParam, 10) : (req.query.topFive === 'true' ? 5 : undefined);
+
+      // Pagination
+      const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+      const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize as string, 10) || 20));
+
+      // Customer coordinates resolution
+      let customerLat = req.query.lat ? parseFloat(req.query.lat as string) : undefined;
+      let customerLng = req.query.lng ? parseFloat(req.query.lng as string) : undefined;
+
+      if (!customerLat || !customerLng) {
+        const cityKey = searchCity || (searchPincode === '628552' ? 'kalugumalai' : 'coimbatore');
+        const fallbackCoords = CITY_COORDS[cityKey] || { lat: 11.0168, lng: 76.9558 };
+        customerLat = fallbackCoords.lat;
+        customerLng = fallbackCoords.lng;
+      }
+
+      // Fetch active beauticians with subscriptions, bookings, and services from DB
       const beauticians: any[] = await (prisma as any).beautician.findMany({
         where: {
           status: 'active',
-          ...(searchCity ? { city: { contains: searchCity, mode: 'insensitive' } } : {}),
         },
         include: {
           subscription: true,
           bookings: {
-            select: { id: true, status: true },
+            select: { id: true, status: true, totalAmountPaise: true, createdAt: true },
           },
           servicePackages: {
             where: { isActive: true },
             select: { id: true, name: true, pricePaise: true, serviceType: true },
-            take: 6,
+            take: 8,
           },
           galleryPhotos: {
             select: { id: true, imageUrl: true, serviceTag: true },
             take: 4,
           },
         },
+        orderBy: {
+          createdAt: 'desc',
+        },
       });
 
-      // Map each beautician with strictly real database information
+      // Extract all unique registered professions across all active beauticians
+      const professionSet = new Set<string>();
+      professionSet.add('All Beauticians');
+      beauticians.forEach((b: any) => {
+        if (Array.isArray(b.businessTypes)) {
+          b.businessTypes.forEach((bt: string) => {
+            if (bt && typeof bt === 'string') {
+              professionSet.add(bt.trim());
+            }
+          });
+        }
+        if (Array.isArray(b.servicePackages)) {
+          b.servicePackages.forEach((pkg: any) => {
+            if (pkg.serviceType && typeof pkg.serviceType === 'string') {
+              professionSet.add(pkg.serviceType.trim());
+            }
+          });
+        }
+      });
+      const availableProfessions = Array.from(professionSet);
+
+      // Map each beautician with real database calculations
       let enriched = beauticians.map((b: any, index: number) => {
         const bookingsList = Array.isArray(b.bookings) ? b.bookings : [];
-        // Strictly true count of completed / confirmed bookings in DB
         const completedBookings = bookingsList.filter(
           (bk: any) => bk.status === 'completed' || bk.status === 'confirmed' || bk.status === 'Closed'
         ).length;
 
-        // Pro subscription status directly from subscriptions table
         const isPro = Boolean(
           b.subscription?.status === 'active' &&
           (b.subscription?.tier === 'pro_monthly' ||
@@ -76,25 +139,20 @@ export class DiscoveryController {
           ? (b.businessTypes as string[])
           : ['Beautician', 'Bridal Artist'];
 
-        // Exact pincode match calculation
         const isExactPincode = Boolean(searchPincode && b.pincode === searchPincode);
 
-        // Distance calculation
-        let simulatedDistanceKm = 1.0;
-        if (searchPincode && b.pincode) {
-          const diff = Math.abs(parseInt(searchPincode, 10) - parseInt(b.pincode, 10));
-          simulatedDistanceKm = isExactPincode ? 0.8 + ((index % 3) * 0.4) : Math.min(35, Math.max(1.8, diff * 1.2));
-        }
-
-        // Determine base coordinates for geographic map view
+        // Resolve geographic coordinates
         const cKey = (b.city || 'coimbatore').toLowerCase().trim();
         const baseCoords = CITY_COORDS[cKey] || { lat: 11.0168, lng: 76.9558 };
-
-        // Spread markers slightly across the city so each makeover is individually visible on map
         const latOffset = ((index % 5) - 2) * 0.012 + (index * 0.003);
         const lngOffset = (((index * 3) % 5) - 2) * 0.014 - (index * 0.002);
+        const bLat = parseFloat((baseCoords.lat + latOffset).toFixed(6));
+        const bLng = parseFloat((baseCoords.lng + lngOffset).toFixed(6));
 
-        // Extract real services and starting prices from servicePackages table
+        // Real Haversine Distance in KM from customer
+        const distanceKm = haversineDistanceKm(customerLat!, customerLng!, bLat, bLng);
+
+        // Services & pricing
         const packages = Array.isArray(b.servicePackages) ? b.servicePackages : [];
         let startingPrice = 3000;
         if (packages.length > 0) {
@@ -123,74 +181,150 @@ export class DiscoveryController {
           isPro,
           subscriptionTier: b.subscription?.tier || 'free',
           verified: true,
-          completedBookingsCount: completedBookings, // Strictly real count
-          distanceKm: parseFloat(simulatedDistanceKm.toFixed(1)),
+          completedBookingsCount: completedBookings,
+          distanceKm,
           isExactPincode,
           startingPrice,
           services,
-          latitude: parseFloat((baseCoords.lat + latOffset).toFixed(6)),
-          longitude: parseFloat((baseCoords.lng + lngOffset).toFixed(6)),
+          latitude: bLat,
+          longitude: bLng,
           instagramHandle: b.instagramHandle || null,
+          createdAt: b.createdAt,
         };
       });
 
-      // Filter by Category if provided
-      if (category !== 'all') {
-        if (category === 'pro') {
-          enriched = enriched.filter((b) => b.isPro);
-        } else {
-          enriched = enriched.filter((b) =>
-            b.businessTypes.some((t: string) => t.toLowerCase().includes(category)) ||
-            b.services.some((s: string) => s.toLowerCase().includes(category))
+      // 1. Text Search Filter (name, profession, location, pin)
+      if (search) {
+        enriched = enriched.filter((b) => {
+          return (
+            b.businessName.toLowerCase().includes(search) ||
+            b.ownerName.toLowerCase().includes(search) ||
+            b.city.toLowerCase().includes(search) ||
+            b.address.toLowerCase().includes(search) ||
+            b.pincode.includes(search) ||
+            b.businessTypes.some((t: string) => t.toLowerCase().includes(search)) ||
+            b.services.some((s: string) => s.toLowerCase().includes(search))
           );
-        }
+        });
       }
 
-      if (proOnly) {
+      // 2. Profession / Category Filter
+      const activeProf = profession || (category !== 'All' && category !== 'all' ? category : '');
+      if (activeProf && activeProf.toLowerCase() !== 'all beauticians') {
+        const pLower = activeProf.toLowerCase();
+        enriched = enriched.filter((b) =>
+          b.businessTypes.some((t: string) => t.toLowerCase().includes(pLower)) ||
+          b.services.some((s: string) => s.toLowerCase().includes(pLower))
+        );
+      }
+
+      // 3. Subscription Filter
+      if (subscription === 'pro') {
         enriched = enriched.filter((b) => b.isPro);
+      } else if (subscription === 'free') {
+        enriched = enriched.filter((b) => !b.isPro);
       }
 
-      // Sorter Algorithm:
-      // 1. Pro / Premium Subscribers first (highest priority)
-      // 2. Orders completed volume descending
-      // 3. Exact Pincode match next
-      // 4. Distance proximity
-      enriched.sort((a, b) => {
-        if (a.isPro !== b.isPro) {
-          return a.isPro ? -1 : 1;
+      // 4. Section & Radius Rules
+      if (section === 'nearby' && radiusKm !== undefined) {
+        // Strictly only show beauticians within the selected radius (default 50 KM)
+        enriched = enriched.filter((b) => b.distanceKm <= radiusKm!);
+      } else if (radiusKm !== undefined && radiusKm > 0) {
+        enriched = enriched.filter((b) => b.distanceKm <= radiusKm);
+      }
+
+      // 5. Ranking and Sorting Rules
+      if (section === 'top') {
+        // Dedicated Top Beauticians Ranking
+        if (rankingCriteria === 'bookings') {
+          // Most bookings descending
+          enriched.sort((a, b) => b.completedBookingsCount - a.completedBookingsCount || a.distanceKm - b.distanceKm);
+        } else if (rankingCriteria === 'subscription') {
+          // Subscription-based (Shilpi Pro priority)
+          enriched.sort((a, b) => {
+            if (a.isPro !== b.isPro) return a.isPro ? -1 : 1;
+            return b.completedBookingsCount - a.completedBookingsCount;
+          });
+        } else {
+          // Combined: Shilpi Pro priority, then bookings volume, then distance
+          enriched.sort((a, b) => {
+            if (a.isPro !== b.isPro) return a.isPro ? -1 : 1;
+            if (b.completedBookingsCount !== a.completedBookingsCount) {
+              return b.completedBookingsCount - a.completedBookingsCount;
+            }
+            return a.distanceKm - b.distanceKm;
+          });
         }
-        if (b.completedBookingsCount !== a.completedBookingsCount) {
+      } else if (section === 'nearby') {
+        // Nearby: sort strictly by distance proximity (closest first)
+        enriched.sort((a, b) => {
+          if (a.distanceKm !== b.distanceKm) return a.distanceKm - b.distanceKm;
+          if (a.isPro !== b.isPro) return a.isPro ? -1 : 1;
           return b.completedBookingsCount - a.completedBookingsCount;
+        });
+      } else {
+        // Section 'all' or explicit sortBy
+        if (sortBy === 'distance') {
+          enriched.sort((a, b) => a.distanceKm - b.distanceKm);
+        } else if (sortBy === 'most_bookings') {
+          enriched.sort((a, b) => b.completedBookingsCount - a.completedBookingsCount);
+        } else if (sortBy === 'least_bookings') {
+          enriched.sort((a, b) => a.completedBookingsCount - b.completedBookingsCount);
+        } else if (sortBy === 'recently_registered' || sortBy === 'recent') {
+          enriched.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        } else {
+          // Default: Pro first, then bookings, then distance
+          enriched.sort((a, b) => {
+            if (a.isPro !== b.isPro) return a.isPro ? -1 : 1;
+            if (b.completedBookingsCount !== a.completedBookingsCount) {
+              return b.completedBookingsCount - a.completedBookingsCount;
+            }
+            return a.distanceKm - b.distanceKm;
+          });
         }
-        if (a.isExactPincode !== b.isExactPincode) {
-          return a.isExactPincode ? -1 : 1;
-        }
-        return a.distanceKm - b.distanceKm;
-      });
-
-      // Limit to Top 5 if requested
-      if (topFive) {
-        enriched = enriched.slice(0, 5);
       }
+
+      // 6. Dynamic Ranking Limit (Top 5, Top 10, Top 20, Top 50, Top 100, All)
+      const totalBeforeLimit = enriched.length;
+      if (rankingLimit && rankingLimit > 0) {
+        enriched = enriched.slice(0, rankingLimit);
+      }
+
+      // 7. Pagination for large listings (Section 2 All Beauticians)
+      const totalFiltered = enriched.length;
+      const startIndex = (page - 1) * pageSize;
+      const paginatedData = enriched.slice(startIndex, startIndex + pageSize);
+      const totalPages = Math.ceil(totalFiltered / pageSize);
 
       res.status(200).json({
         success: true,
-        data: enriched,
-        total: enriched.length,
-        searchQuery: {
-          pincode: searchPincode,
-          city: searchCity,
-          category,
-          topFive,
+        data: paginatedData,
+        total: totalFiltered,
+        totalUncapped: totalBeforeLimit,
+        availableProfessions,
+        pagination: {
+          page,
+          pageSize,
+          totalPages,
+          hasMore: startIndex + pageSize < totalFiltered,
+        },
+        meta: {
+          section,
+          radiusKm,
+          rankingCriteria,
+          rankingLimit: rankingLimit || 'all',
+          subscription,
+          category: activeProf || 'All Beauticians',
+          customerCoords: { lat: customerLat, lng: customerLng },
         },
       });
     } catch (error) {
-      logger.error({ error }, 'Failed to fetch nearest beauticians');
+      logger.error({ error }, 'Failed to fetch discovery beauticians');
       res.status(500).json({
         success: false,
         error: {
           code: 'DISCOVERY_ERROR',
-          message: 'Could not fetch nearest beauticians.',
+          message: 'Could not fetch discovery beauticians.',
         },
       });
     }
