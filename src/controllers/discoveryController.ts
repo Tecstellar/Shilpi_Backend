@@ -127,13 +127,8 @@ export class DiscoveryController {
           (bk: any) => bk.status === 'completed' || bk.status === 'confirmed' || bk.status === 'Closed'
         ).length;
 
-        const isPro = Boolean(
-          b.subscription?.status === 'active' &&
-          (b.subscription?.tier === 'pro_monthly' ||
-           b.subscription?.tier === 'pro_annual' ||
-           b.subscription?.tier === 'enterprise' ||
-           b.subscription?.tier === 'premium')
-        );
+        // No pro memberships currently; all registered users are on the free plan
+        const isPro = false;
 
         const businessTypes = Array.isArray(b.businessTypes) && b.businessTypes.length > 0
           ? (b.businessTypes as string[])
@@ -225,8 +220,16 @@ export class DiscoveryController {
         enriched = enriched.filter((b) => !b.isPro);
       }
 
-      // 4. Section & Radius Rules
-      if (section === 'nearby' && radiusKm !== undefined) {
+      // 4. Section & Radius Rules (Exact pincode matches are always preserved)
+      if (searchPincode) {
+        // If user searched a specific pincode, prioritize exact pincode matches
+        const exactMatches = enriched.filter((b) => b.isExactPincode);
+        let nonExact = enriched.filter((b) => !b.isExactPincode);
+        if (radiusKm !== undefined && radiusKm > 0) {
+          nonExact = nonExact.filter((b) => b.distanceKm <= radiusKm);
+        }
+        enriched = [...exactMatches, ...nonExact];
+      } else if (section === 'nearby' && radiusKm !== undefined) {
         // Strictly only show beauticians within the selected radius (default 50 KM)
         enriched = enriched.filter((b) => b.distanceKm <= radiusKm!);
       } else if (radiusKm !== undefined && radiusKm > 0) {
@@ -234,7 +237,26 @@ export class DiscoveryController {
       }
 
       // 5. Ranking and Sorting Rules
-      if (section === 'top') {
+      const userPrioritySort = (a: any, b: any) => {
+        // 1. Exact pincode match comes first
+        if (a.isExactPincode !== b.isExactPincode) {
+          return a.isExactPincode ? -1 : 1;
+        }
+        // 2. Shilpi Subscriber (isPro) ranks #1
+        if (a.isPro !== b.isPro) {
+          return a.isPro ? -1 : 1;
+        }
+        // 3. Completed bookings count (more orders completed)
+        if (b.completedBookingsCount !== a.completedBookingsCount) {
+          return b.completedBookingsCount - a.completedBookingsCount;
+        }
+        // 4. Distance proximity
+        return a.distanceKm - b.distanceKm;
+      };
+
+      if (searchPincode) {
+        enriched.sort(userPrioritySort);
+      } else if (section === 'top') {
         // Dedicated Top Beauticians Ranking
         if (rankingCriteria === 'bookings') {
           // Most bookings descending

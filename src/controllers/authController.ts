@@ -107,106 +107,7 @@ export class AuthController {
         return;
       }
 
-      // Only the primary showcase number (+919876543210) auto-provisions a pre-filled demo studio.
-      // Additional demo OTP numbers like +918888888888 use OTP 123456 but go through normal user registration.
-      const digitsOnly = phone.replace(/\D/g, '');
-      const isPrebuiltDemo = digitsOnly === '9876543210' || digitsOnly === '919876543210';
-
-      if (isPrebuiltDemo) {
-        const canonicalPhone = '+919876543210';
-        const demoSeed = {
-          ownerName: 'Shilpa R.',
-          businessName: 'Shilpi Makeovers',
-          city: 'Coimbatore',
-          address: 'RS Puram, Coimbatore',
-          pincode: '641002',
-          businessTypes: ['Makeup Artist', 'Bridal Artist'],
-        };
-
-        let demoUser = await prisma.user.findUnique({
-          where: { phone: canonicalPhone },
-          include: {
-            beautician: {
-              include: { subscription: true },
-            },
-          },
-        });
-
-        if (!demoUser) {
-          demoUser = await prisma.$transaction(async (tx) => {
-            const beautician = await tx.beautician.upsert({
-              where: { phone: canonicalPhone },
-              update: {},
-              create: {
-                phone: canonicalPhone,
-                ownerName: demoSeed.ownerName,
-                businessName: demoSeed.businessName,
-                city: demoSeed.city,
-                address: demoSeed.address,
-                pincode: demoSeed.pincode,
-                businessTypes: demoSeed.businessTypes,
-                status: 'active',
-                activeTheme: 'signature',
-                themeMode: 'dark',
-                subscription: {
-                  create: {
-                    tier: 'free',
-                    status: 'active',
-                    currentPeriodStart: new Date(),
-                    currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-                    clientLimit: 15,
-                    galleryLimit: 20,
-                  },
-                },
-              },
-            });
-
-            return tx.user.create({
-              data: {
-                beauticianId: beautician.id,
-                phone: canonicalPhone,
-                role: 'owner',
-                lastLoginAt: new Date(),
-              },
-              include: {
-                beautician: {
-                  include: { subscription: true },
-                },
-              },
-            });
-          }, { maxWait: 10000, timeout: 30000 });
-        } else {
-          await prisma.user.update({
-            where: { id: demoUser.id },
-            data: { lastLoginAt: new Date() },
-          });
-        }
-
-        const demoToken = jwt.sign(
-          {
-            userId: demoUser.id,
-            beauticianId: demoUser.beauticianId,
-            phone: demoUser.phone,
-            role: demoUser.role,
-          },
-          config.jwt.secret,
-          { expiresIn: '30d' }
-        );
-
-        res.status(200).json({
-          success: true,
-          isNewUser: false,
-          token: demoToken,
-          user: {
-            id: demoUser.id,
-            phone: demoUser.phone,
-            role: demoUser.role,
-          },
-          beautician: demoUser.beautician,
-        });
-        return;
-      }
-
+      // Check if user exists in database
       const existingUser = await prisma.user.findUnique({
         where: { phone },
         include: {
@@ -217,7 +118,7 @@ export class AuthController {
       });
 
       if (!existingUser) {
-        // Needs onboarding registration
+        // Fresh registration required
         res.status(200).json({
           success: true,
           isNewUser: true,
@@ -290,11 +191,9 @@ export class AuthController {
         packages,
       } = parsed.data;
 
-      // Verify that phone was actually verified in production (demo numbers always allowed)
+      // Verify that phone was actually verified in production (demo number always allowed)
       const digitsOnly = phone.replace(/\D/g, '');
       const isDemo =
-        digitsOnly === '9876543210' ||
-        digitsOnly === '919876543210' ||
         digitsOnly === '8888888888' ||
         digitsOnly === '918888888888';
 
