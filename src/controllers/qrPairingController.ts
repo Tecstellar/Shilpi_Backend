@@ -7,7 +7,7 @@ import { config } from '../config/index.js';
 import { logger } from '../lib/logger.js';
 
 const AuthorizeQrSchema = z.object({
-  sessionId: z.string().uuid(),
+  sessionId: z.string().min(1),
 });
 
 export let qrPairingManagerInstance: QrPairingManager | null = null;
@@ -17,7 +17,59 @@ export const setQrPairingManager = (manager: QrPairingManager) => {
 };
 
 export class QrPairingController {
-  // Endpoint called by Shilpi mobile app after scanning the QR on Web terminal
+  /**
+   * Generates a new official QR pairing session for Web Terminal.
+   * Can be requested via REST (HTTP POST) or Socket.io.
+   */
+  static async createSession(req: Request, res: Response): Promise<void> {
+    try {
+      if (!qrPairingManagerInstance) {
+        res.status(500).json({ success: false, error: { message: 'QR pairing engine not ready' } });
+        return;
+      }
+
+      const session = await qrPairingManagerInstance.createSession();
+      res.status(200).json({
+        success: true,
+        ...session,
+      });
+    } catch (error) {
+      logger.error({ error }, 'Failed to create QR pairing session');
+      res.status(500).json({ success: false, error: { message: 'Internal server error' } });
+    }
+  }
+
+  /**
+   * Resilient HTTP status polling endpoint for Web Terminal.
+   * Allows Web Terminal to detect pairing even if websocket disconnects or drops.
+   */
+  static async getStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = (req.query.sessionId as string) || (req.params.sessionId as string);
+      if (!sessionId) {
+        res.status(400).json({ success: false, error: { message: 'Missing sessionId parameter' } });
+        return;
+      }
+
+      if (!qrPairingManagerInstance) {
+        res.status(500).json({ success: false, error: { message: 'QR pairing engine not ready' } });
+        return;
+      }
+
+      const statusData = await qrPairingManagerInstance.getSessionStatus(sessionId);
+      res.status(200).json({
+        success: true,
+        ...statusData,
+      });
+    } catch (error) {
+      logger.error({ error }, 'Failed to get QR session status');
+      res.status(500).json({ success: false, error: { message: 'Internal server error' } });
+    }
+  }
+
+  /**
+   * Endpoint called by Shilpi mobile app after scanning the QR on Web terminal.
+   */
   static async authorize(req: Request, res: Response): Promise<void> {
     try {
       const parsed = AuthorizeQrSchema.safeParse(req.body);
@@ -62,8 +114,8 @@ export class QrPairingController {
         return;
       }
 
-      // Push real-time authorization to web socket
-      const success = qrPairingManagerInstance.authorizeSession(sessionId, {
+      // Push real-time authorization to web socket and persistent DB
+      const success = await qrPairingManagerInstance.authorizeSession(sessionId, {
         token: webToken,
         user: {
           id: user.id,

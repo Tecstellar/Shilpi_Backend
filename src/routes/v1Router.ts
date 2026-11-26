@@ -29,6 +29,8 @@ v1Router.patch('/auth/me', authenticateToken, AuthController.updateMe);
 v1Router.delete('/auth/account', authenticateToken, AuthController.deleteAccount);
 
 // 3. WhatsApp-Style Web Terminal QR Pairing (Authorized by Mobile)
+v1Router.post('/auth/qr/session', QrPairingController.createSession);
+v1Router.get('/auth/qr/status', QrPairingController.getStatus);
 v1Router.post('/auth/qr/authorize', authenticateToken, QrPairingController.authorize);
 
 // 4. Authenticated Studio Overview & Dashboard
